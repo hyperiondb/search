@@ -35,5 +35,15 @@ jobs:
       - name: Initialize pgrx against system PostgreSQL
         run: cargo pgrx init --pg18 /usr/lib/postgresql/18/bin/pg_config
 
+      - name: Grant the runner write access to the PG install dirs
+        # `cargo pgrx test` installs the extension into the system PG's pkglibdir /
+        # sharedir (root-owned, from apt). The runner must be able to write there,
+        # otherwise the test-framework install step fails and every #[pg_test]
+        # cascade-fails on the poisoned test mutex.
+        run: |
+          sudo chown -R "$(id -un)" \
+            "$(/usr/lib/postgresql/18/bin/pg_config --pkglibdir)" \
+            "$(/usr/lib/postgresql/18/bin/pg_config --sharedir)"
+
       - name: Run tests
         run: cargo pgrx test --no-default-features --features pg18
