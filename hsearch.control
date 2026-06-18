@@ -1,0 +1,5 @@
+comment = 'BM25 full-text search for PostgreSQL (Tantivy-backed bm25 index access method)'
+default_version = '@CARGO_VERSION@'
+module_pathname = '$libdir/hsearch'
+relocatable = false
+superuser = true

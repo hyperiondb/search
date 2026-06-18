@@ -1,0 +1,40 @@
+[package]
+name = "hsearch"
+version = "0.1.0"
+edition = "2021"
+publish = true
+description = "BM25 full-text search for PostgreSQL: a Tantivy-backed `bm25` index"
+license = "AGPL-3.0-only"
+repository = "https://github.com/hyperiondb/search"
+homepage = "https://hyperiondb.eu/"
+readme = "README.md"
+authors = ["Tadas Talaikis <info@nordlet.com>"]
+keywords = ["postgresql", "full-text-search", "bm25", "tantivy", "pgrx"]
+categories = ["database"]
+
+[lib]
+crate-type = ["cdylib", "lib"]
+
+[features]
+default = ["pg18"]
+pg18 = ["pgrx/pg18", "pgrx-tests/pg18"]
+pg_test = []
+
+[dependencies]
+pgrx = "=0.18.1"
+tantivy = "=0.26.1"
+serde = { version = "=1.0.228", features = ["derive"] }
+serde_json = "=1.0.150"
+unicode-normalization = "=0.1.25"
+
+[dev-dependencies]
+pgrx-tests = "=0.18.1"
+
+[profile.dev]
+panic = "unwind"
+
+[profile.release]
+panic = "unwind"
+opt-level = 3
+lto = "fat"
+codegen-units = 1

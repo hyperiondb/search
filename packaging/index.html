@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>hsearch — apt repository</title>
+  <style>
+    body { font-family: system-ui, -apple-system, sans-serif; max-width: 46rem; margin: 3rem auto; padding: 0 1rem; line-height: 1.55; color: #1f2328; }
+    h1 { margin-bottom: .25rem; }
+    pre { background: #f6f8fa; padding: 1rem; overflow: auto; border-radius: 6px; }
+    code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    a { color: #0969da; }
+    .muted { color: #59636e; }
+  </style>
+</head>
+<body>
+  <h1>hsearch</h1>
+  <p class="muted">BM25 full-text search for PostgreSQL — a Tantivy-backed <code>bm25</code> index access method. This is its Debian/Ubuntu apt repository.</p>
+
+  <h2>Install</h2>
+  <pre><code>curl -fsSL https://hyperiondb.github.io/search/install.sh | sudo bash
+sudo apt-get install -y postgresql-18-hsearch</code></pre>
+
+  <p>Then enable it:</p>
+  <pre><code>sudo sed -i "s/^#\?shared_preload_libraries.*/shared_preload_libraries = 'hsearch'/" \
+  /etc/postgresql/18/main/postgresql.conf
+sudo systemctl restart postgresql</code></pre>
+  <pre><code>CREATE EXTENSION hsearch;</code></pre>
+
+  <p class="muted">Source &amp; docs:
+    <a href="https://github.com/hyperiondb/hsearch">github.com/hyperiondb/hsearch</a></p>
+</body>
+</html>

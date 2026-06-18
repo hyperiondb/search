@@ -1,0 +1,9 @@
+/target
+**/*.rs.bk
+*.so
+.pgrx/
+/data/
+*.log
+.DS_Store
+dist/
+.codegraph/

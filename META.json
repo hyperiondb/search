@@ -1,0 +1,54 @@
+{
+   "name": "hsearch",
+   "abstract": "BM25 full-text search for PostgreSQL via a Tantivy-backed bm25 index",
+   "description": "hsearch is a pgrx PostgreSQL extension that adds a custom `bm25` index backed by the Tantivy search engine. It exposes the `hyper` schema (ngram tokenizer cast, BM25 score function), the index-accelerated `&&&` match operator, and the `key_field` index storage option. The index lives on local disk and is rebuilt on failover (the search corpus is a derived projection and fully reconstructable).",
+   "version": "0.1.0",
+   "maintainer": [
+      "Tadas Talaikis <talaikis.tadas@gmail.com>"
+   ],
+   "license": "agpl_3",
+   "provides": {
+      "hsearch": {
+         "abstract": "BM25 full-text search for PostgreSQL (bm25 index access method)",
+         "file": "hsearch.control",
+         "version": "0.1.0"
+      }
+   },
+   "prereqs": {
+      "runtime": {
+         "requires": {
+            "PostgreSQL": "18.0.0"
+         }
+      },
+      "build": {
+         "requires": {
+            "cargo-pgrx": "0.18.1"
+         }
+      }
+   },
+   "resources": {
+      "homepage": "https://hyperiondb.eu",
+      "bugtracker": {
+         "web": "https://github.com/hyperiondb/search/issues"
+      },
+      "repository": {
+         "url": "https://github.com/hyperiondb/search.git",
+         "web": "https://github.com/hyperiondb/search",
+         "type": "git"
+      }
+   },
+   "generated_by": "Tadas Talaikis",
+   "meta-spec": {
+      "version": "1.0.0",
+      "url": "https://pgxn.org/meta/spec.txt"
+   },
+   "tags": [
+      "full text search",
+      "bm25",
+      "tantivy",
+      "ngram",
+      "index access method",
+      "search"
+   ],
+   "release_status": "stable"
+}

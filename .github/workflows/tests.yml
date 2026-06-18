@@ -1,0 +1,39 @@
+name: tests
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  pgrx:
+    name: cargo pgrx test (pg18)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+
+      - name: Add PGDG repo and build deps
+        run: |
+          set -e
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+            -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc
+          . /etc/os-release
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt ${VERSION_CODENAME}-pgdg main" \
+            | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            postgresql-18 postgresql-server-dev-18 build-essential clang libclang-dev pkg-config
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+
+      - name: Install cargo-pgrx
+        run: cargo install cargo-pgrx --version 0.18.1 --locked
+
+      - name: Initialize pgrx against system PostgreSQL
+        run: cargo pgrx init --pg18 /usr/lib/postgresql/18/bin/pg_config
+
+      - name: Run tests
+        run: cargo pgrx test --no-default-features --features pg18

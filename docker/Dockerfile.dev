@@ -1,0 +1,25 @@
+FROM postgres:18-trixie
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      build-essential clang libclang-dev pkg-config libssl-dev \
+      curl ca-certificates git postgresql-server-dev-18; \
+    rm -rf /var/lib/apt/lists/*
+
+RUN useradd -m -s /bin/bash builder \
+    && install -d -o builder -g builder /work
+
+USER builder
+WORKDIR /home/builder
+
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.0 --profile minimal
+ENV PATH=/home/builder/.cargo/bin:$PATH
+
+RUN cargo install cargo-pgrx --version 0.18.1 --locked
+RUN cargo pgrx init --pg18 /usr/lib/postgresql/18/bin/pg_config
+
+ENV CARGO_TARGET_DIR=/home/builder/target
+WORKDIR /work
