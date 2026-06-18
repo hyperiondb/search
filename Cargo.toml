@@ -1,6 +1,6 @@
 [package]
 name = "hsearch"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 publish = true
 description = "BM25 full-text search for PostgreSQL: a Tantivy-backed `bm25` index"
