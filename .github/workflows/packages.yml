@@ -40,9 +40,6 @@ jobs:
       - name: Install cargo-pgrx
         run: cargo install cargo-pgrx --version 0.18.1 --locked
 
-      - name: Initialize pgrx against system PostgreSQL
-        run: cargo pgrx init --pg${{ matrix.pg }} /usr/lib/postgresql/${{ matrix.pg }}/bin/pg_config
-
       - name: Build .deb
         run: bash packaging/build-deb.sh ${{ matrix.pg }}
 

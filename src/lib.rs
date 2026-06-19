@@ -1,5 +1,6 @@
 use core::ffi::c_char;
 use pgrx::datum::{FromDatum, IntoDatum};
+use pgrx::guc::{GucContext, GucFlags, GucRegistry, GucSetting};
 use pgrx::prelude::*;
 use std::ffi::CStr;
 
@@ -13,6 +14,12 @@ mod tokenizer;
 use tokenizer::NgramConfig;
 
 pgrx::pg_module_magic!();
+
+pub static MAX_MATCHES: GucSetting<i32> = GucSetting::<i32>::new(1000);
+
+pub fn max_matches() -> usize {
+    MAX_MATCHES.get().max(1) as usize
+}
 
 macro_rules! pg_finfo_v1 {
     ($finfo:ident) => {
@@ -34,6 +41,18 @@ pg_finfo_v1!(pg_finfo_hsearch_bm25_handler);
 
 #[pg_guard]
 pub extern "C-unwind" fn _PG_init() {
+    GucRegistry::define_int_guc(
+        c"hsearch.max_matches",
+        c"Max BM25 candidate matches collected per &&& scan key.",
+        c"Top-K by BM25 score. Lower = faster searches; higher = better recall for filter-style \
+          queries. ORDER BY hyper.score(...) + LIMIT autocomplete is unaffected (top-K contains \
+          the top-N).",
+        &MAX_MATCHES,
+        1,
+        i32::MAX,
+        GucContext::Userset,
+        GucFlags::default(),
+    );
     unsafe {
         options::init_reloptions();
         scoreboard::install_hooks();

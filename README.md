@@ -107,6 +107,25 @@ commit point).
 `hyper.reindex_all()` rebuilds every `bm25` index (e.g. as a belt-and-suspenders step in an
 operational runbook).
 
+## Performance
+
+`scripts/test-perf.sh` benchmarks index build time, search latency (p50/p95/p99 for the
+autocomplete query shape), single-row insert+commit latency, and on-disk size on a synthetic
+dataset (env: `ROWS`, `SEARCH_ITERS`, `INSERT_ITERS`). On a 50k-row worst-case set (only 30
+distinct words, so short ngrams match ~half the corpus) on a laptop: index build ~1.9 s, index
+size 12 MB, search **p50 ~40 ms / p99 ~53 ms**, insert ~26 ms (~38 single-row commits/s). Real,
+diverse data matches far fewer rows per query, so search is typically much faster.
+
+- **`hsearch.max_matches`** (GUC, default `1000`) caps candidate matches collected per `&&&`
+  scan key, as top-K by BM25 score. Lower = faster; higher = better recall for filter-style
+  queries. Score-ordered autocomplete (`ORDER BY hyper.score(...) LIMIT n`) is unaffected because
+  the top-N is always within the top-K. Raise it (e.g. `SET hsearch.max_matches = 5000`) if a
+  distance/price-ordered `&&&` filter needs deeper recall.
+- Writes serialize at commit on a per-index advisory lock (Tantivy's single-writer model) and
+  each commit reloads the index into the backend's RAM mirror, so single-row insert latency grows
+  with index size — bulk loads (one transaction) and `prepareParade*` rebuilds are far faster
+  per row. Batch writes where possible.
+
 ## Building & testing
 
 Requires `cargo-pgrx` 0.18.1 and PostgreSQL 18 server headers.

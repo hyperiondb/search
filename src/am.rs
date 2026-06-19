@@ -6,8 +6,6 @@ use pgrx::datum::FromDatum;
 use pgrx::prelude::*;
 use std::collections::HashMap;
 
-const MAX_MATCHES: usize = 100_000;
-
 fn ctid_to_u64(tid: pg_sys::ItemPointerData) -> u64 {
     let block = unsafe { pgrx::itemptr::item_pointer_get_block_number(&tid) } as u64;
     let off = unsafe { pgrx::itemptr::item_pointer_get_offset_number(&tid) } as u64;
@@ -296,7 +294,7 @@ pub unsafe extern "C-unwind" fn amgetbitmap(
             None => return 0,
         };
         let cfg = attcfg(attno);
-        let hits = store::search(index, attno, &query, &cfg, MAX_MATCHES).unwrap_or_default();
+        let hits = store::search(index, attno, &query, &cfg, crate::max_matches()).unwrap_or_default();
         let mut m: HashMap<u64, (String, f32)> = HashMap::new();
         for h in hits {
             let e = m.entry(h.ctid).or_insert((h.key.clone(), f32::MIN));

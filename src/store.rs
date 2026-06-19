@@ -298,7 +298,6 @@ pub fn search(
             Some(v) => v,
             None => return Ok(Vec::new()),
         };
-        cached.reader.reload().map_err(|e| format!("reload: {e}"))?;
         let searcher = cached.reader.searcher();
         let schema = cached.index.schema();
         let field = match schema.get_field(&format!("f{attno}")) {
