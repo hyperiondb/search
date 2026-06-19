@@ -73,7 +73,9 @@ LIMIT 10 OFFSET 0;
 
 `key_field` must name one of the indexed columns (the key/`_id`); every other indexed column
 is treated as an ngram-tokenized text field. The `&&&` query word is tokenized into the same
-ngrams as the indexed text and matches documents that share any of them, ranked by BM25.
+ngrams as the indexed text and matches documents that contain **all** of them (a conjunction,
+i.e. an accent-folded substring match), ranked by BM25. So `name &&& 'canon'` matches rows
+whose `name` contains `canon`, not rows that merely share a common bigram like `on`.
 
 ## Architecture
 
@@ -112,9 +114,11 @@ operational runbook).
 `scripts/test-perf.sh` benchmarks index build time, search latency (p50/p95/p99 for the
 autocomplete query shape), single-row insert+commit latency, and on-disk size on a synthetic
 dataset (env: `ROWS`, `SEARCH_ITERS`, `INSERT_ITERS`). On a 50k-row worst-case set (only 30
-distinct words, so short ngrams match ~half the corpus) on a laptop: index build ~1.9 s, index
-size 12 MB, search **p50 ~40 ms / p99 ~53 ms**, insert ~26 ms (~38 single-row commits/s). Real,
-diverse data matches far fewer rows per query, so search is typically much faster.
+distinct words, so each query word still matches a large fraction of the corpus) on a laptop:
+index build ~1.9 s, index size 12 MB, search **p50 ~40 ms / p99 ~53 ms**, insert ~26 ms (~38
+single-row commits/s). Real, diverse data matches far fewer rows per query — and `&&&` is a
+conjunction (all of a word's ngrams must be present), which prunes candidates further — so
+search is typically much faster.
 
 - **`hsearch.max_matches`** (GUC, default `1000`) caps candidate matches collected per `&&&`
   scan key, as top-K by BM25 score. Lower = faster; higher = better recall for filter-style

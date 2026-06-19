@@ -104,7 +104,7 @@ pub fn ngram_match(haystack: &str, needle: &str, cfg: &NgramConfig) -> bool {
         return false;
     }
     let hay_grams = ngram_set(haystack, cfg);
-    needle_grams.iter().any(|g| hay_grams.contains(g))
+    needle_grams.iter().all(|g| hay_grams.contains(g))
 }
 
 pub fn pack_typmod(parts: &[String]) -> Result<i32, String> {
@@ -270,8 +270,16 @@ mod tests {
     #[test]
     fn match_accent_insensitive() {
         assert!(ngram_match("Ąžuolų baldai", "azuol", &cfg()));
-        assert!(ngram_match("Kavos aparatas", "kava", &cfg()));
+        assert!(ngram_match("Kavos aparatas", "kavos", &cfg()));
         assert!(ngram_match("Kavos aparatas", "apar", &cfg()));
+    }
+
+    #[test]
+    fn match_is_conjunctive_substring() {
+        assert!(!ngram_match("Telefonas Samsung", "canon", &cfg()));
+        assert!(!ngram_match("Kavos aparatas", "kava", &cfg()));
+        assert!(ngram_match("Canon EOS fotoaparatas", "canon", &cfg()));
+        assert!(ngram_match("Sony PlayStation 5", "playstation", &cfg()));
     }
 
     #[test]

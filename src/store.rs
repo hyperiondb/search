@@ -319,7 +319,7 @@ pub fn search(
             }
             let term = Term::from_field_text(field, &g);
             clauses.push((
-                Occur::Should,
+                Occur::Must,
                 Box::new(TermQuery::new(term, IndexRecordOption::WithFreqs)),
             ));
         }

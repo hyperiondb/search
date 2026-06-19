@@ -204,7 +204,7 @@ CREATE CAST (text AS hyper.ngram) WITHOUT FUNCTION AS IMPLICIT;
 CREATE CAST (character varying AS hyper.ngram) WITHOUT FUNCTION AS IMPLICIT;
 
 CREATE FUNCTION hyper.ngram_match(text, text) RETURNS boolean
-    AS 'MODULE_PATHNAME', 'hsearch_ngram_match' LANGUAGE c IMMUTABLE STRICT PARALLEL SAFE;
+    AS 'MODULE_PATHNAME', 'hsearch_ngram_match' LANGUAGE c IMMUTABLE STRICT PARALLEL SAFE COST 100000;
 
 CREATE OPERATOR public.&&& (
     LEFTARG = text,
@@ -313,12 +313,12 @@ mod tests {
     #[pg_test]
     fn operator_uses_index_and_matches() {
         seed_items();
-        let count = Spi::get_one::<i64>("SELECT count(*) FROM items WHERE name &&& 'kava'")
+        let count = Spi::get_one::<i64>("SELECT count(*) FROM items WHERE name &&& 'kavos'")
             .unwrap()
             .unwrap();
-        assert!(count >= 1, "expected kava matches, got {count}");
+        assert!(count >= 1, "expected kavos matches, got {count}");
         let plan = Spi::get_one::<String>(
-            "EXPLAIN (FORMAT TEXT) SELECT _id FROM items WHERE name &&& 'kava'",
+            "EXPLAIN (FORMAT TEXT) SELECT _id FROM items WHERE name &&& 'kavos'",
         )
         .unwrap()
         .unwrap_or_default();
@@ -332,7 +332,7 @@ mod tests {
     fn score_orders_results() {
         seed_items();
         let id = Spi::get_one::<String>(
-            "SELECT _id FROM items WHERE name &&& 'kava' ORDER BY hyper.score(_id) DESC LIMIT 1",
+            "SELECT _id FROM items WHERE name &&& 'kavos' ORDER BY hyper.score(_id) DESC LIMIT 1",
         )
         .unwrap()
         .unwrap();
@@ -408,10 +408,162 @@ mod tests {
         seed_items();
         let n = Spi::get_one::<i32>("SELECT hyper.reindex_all()").unwrap().unwrap();
         assert!(n >= 1);
-        let count = Spi::get_one::<i64>("SELECT count(*) FROM items WHERE name &&& 'kava'")
+        let count = Spi::get_one::<i64>("SELECT count(*) FROM items WHERE name &&& 'kavos'")
             .unwrap()
             .unwrap();
         assert!(count >= 1, "search must work after reindex");
+    }
+
+    fn seed_catalog() {
+        Spi::run(
+            "CREATE TABLE items (
+                _id varchar(24) PRIMARY KEY,
+                name text,
+                summary text,
+                category_path text
+             )",
+        )
+        .unwrap();
+        Spi::run(
+            "INSERT INTO items (_id, name, summary, category_path) VALUES
+                ('000000000000000000000001', 'Telefonas Samsung Galaxy', 'islankstomas ekranas', 'elektronika telefonai'),
+                ('000000000000000000000002', 'Balionas gimtadieniui', 'helio balionas', 'dekoracijos sventems'),
+                ('000000000000000000000003', 'Azuolinis stalas', 'masyvus virtuves stalas', 'baldai stalai'),
+                ('000000000000000000000004', 'Nacionalinis kostiumas', 'tradicinis lietuviskas', 'apranga kostiumai'),
+                ('000000000000000000000005', 'Stotele lauko suoliukas', 'patogus baldas', 'baldai lauko'),
+                ('000000000000000000000006', 'Mikrofonas studijinis', 'kondensatorinis', 'technika garsas'),
+                ('000000000000000000000007', 'Dviratis kalnu', 'aliuminis remas', 'sportas dviraciai'),
+                ('000000000000000000000008', 'Automobilio padangos', 'vasarines', 'auto padangos'),
+                ('000000000000000000000009', 'Sony PlayStation 5 konsole', 'zaidimu konsole', 'elektronika zaidimu konsoles'),
+                ('000000000000000000000010', 'Canon EOS R6 fotoaparatas', 'profesionali kamera', 'fototechnika fotoaparatai')",
+        )
+        .unwrap();
+        Spi::run(
+            "CREATE INDEX search_idx ON items USING bm25 (
+                _id,
+                (name::hyper.ngram(2,5,'ascii_folding=true')),
+                (summary::hyper.ngram(2,5,'ascii_folding=true')),
+                (category_path::hyper.ngram(2,5,'ascii_folding=true'))
+             ) WITH (key_field='_id')",
+        )
+        .unwrap();
+    }
+
+    const CANON_WHERE: &str =
+        "(name &&& 'canon' OR summary &&& 'canon' OR category_path &&& 'canon')";
+    const PLAY_WHERE: &str =
+        "(name &&& 'playstation' OR summary &&& 'playstation' OR category_path &&& 'playstation')";
+
+    #[pg_test]
+    fn repro_score_populated_default_plan() {
+        seed_catalog();
+        let max_s = Spi::get_one::<f64>(&format!(
+            "SELECT COALESCE(max(hyper.score(_id)),0) FROM items WHERE {CANON_WHERE}"
+        ))
+        .unwrap()
+        .unwrap_or(0.0);
+        assert!(
+            max_s > 0.0,
+            "default plan must populate BM25 scores; got max score {max_s} (0 => index not used, scoreboard empty)"
+        );
+    }
+
+    #[pg_test]
+    fn repro_canon_ranks_first_default_plan() {
+        seed_catalog();
+        let top = Spi::get_one::<String>(&format!(
+            "SELECT _id FROM items WHERE {CANON_WHERE} ORDER BY hyper.score(_id) DESC, _id LIMIT 1"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(
+            top, "000000000000000000000010",
+            "Canon item must rank #1 for query 'canon' under the default plan"
+        );
+    }
+
+    #[pg_test]
+    fn canon_ranks_first_with_index() {
+        seed_catalog();
+        Spi::run("SET enable_seqscan = off").unwrap();
+        let top = Spi::get_one::<String>(&format!(
+            "SELECT _id FROM items WHERE {CANON_WHERE} ORDER BY hyper.score(_id) DESC, _id LIMIT 1"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(top, "000000000000000000000010", "Canon must rank #1 when the index is used");
+    }
+
+    #[pg_test]
+    fn playstation_ranks_first_with_index() {
+        seed_catalog();
+        Spi::run("SET enable_seqscan = off").unwrap();
+        let top = Spi::get_one::<String>(&format!(
+            "SELECT _id FROM items WHERE {PLAY_WHERE} ORDER BY hyper.score(_id) DESC, _id LIMIT 1"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(top, "000000000000000000000009", "PlayStation must rank #1 when the index is used");
+    }
+
+    #[pg_test]
+    fn repro_match_breadth_canon() {
+        seed_catalog();
+        Spi::run("SET enable_seqscan = off").unwrap();
+        let n = Spi::get_one::<i64>(&format!("SELECT count(*) FROM items WHERE {CANON_WHERE}"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(n, 1, "query 'canon' should match only the Canon row, got {n}");
+    }
+
+    #[pg_test]
+    fn two_char_query_returns_only_substring_matches() {
+        seed_catalog();
+        let where_ka =
+            "(name &&& 'ka' OR summary &&& 'ka' OR category_path &&& 'ka')";
+        let bad = Spi::get_one::<i64>(&format!(
+            "SELECT count(*) FROM items WHERE {where_ka}
+             AND lower(name||' '||summary||' '||category_path) NOT LIKE '%ka%'"
+        ))
+        .unwrap()
+        .unwrap();
+        assert_eq!(bad, 0, "every 'ka' match must actually contain the substring 'ka'");
+
+        let balionas_matches = Spi::get_one::<bool>(&format!(
+            "SELECT EXISTS(SELECT 1 FROM items WHERE {where_ka}
+             AND _id='000000000000000000000002')"
+        ))
+        .unwrap()
+        .unwrap_or(false);
+        assert!(!balionas_matches, "'Balionas …' has no 'ka' and must be excluded");
+
+        let n = Spi::get_one::<i64>(&format!("SELECT count(*) FROM items WHERE {where_ka}"))
+            .unwrap()
+            .unwrap();
+        assert!(n >= 4, "expected the real 'ka' substring rows, got {n}");
+    }
+
+    #[pg_test]
+    fn ka_matches_exactly_the_substring_rows() {
+        seed_catalog();
+        let where_ka = "(name &&& 'ka' OR summary &&& 'ka' OR category_path &&& 'ka')";
+        let via_op = Spi::get_one::<String>(&format!(
+            "SELECT COALESCE(string_agg(_id, ',' ORDER BY _id),'') FROM items WHERE {where_ka}"
+        ))
+        .unwrap()
+        .unwrap();
+        let via_like = Spi::get_one::<String>(
+            "SELECT COALESCE(string_agg(_id, ',' ORDER BY _id),'') FROM items
+             WHERE lower(name||' '||summary||' '||category_path) LIKE '%ka%'",
+        )
+        .unwrap()
+        .unwrap();
+        let n = via_op.split(',').filter(|s| !s.is_empty()).count();
+        assert_eq!(
+            via_op, via_like,
+            "&&& 'ka' must match exactly the rows whose text contains 'ka' (got n={n})"
+        );
+        assert_eq!(n, 7, "expected 7 'ka' rows in the seed catalog, got {n}: {via_op}");
     }
 }
 

@@ -231,8 +231,8 @@ pub unsafe extern "C-unwind" fn amcostestimate(
     index_pages: *mut f64,
 ) {
     *index_startup_cost = 0.0;
-    *index_total_cost = 10.0;
-    *index_selectivity = 0.005;
+    *index_total_cost = 0.0;
+    *index_selectivity = 0.0001;
     *index_correlation = 0.0;
     *index_pages = 1.0;
 }
