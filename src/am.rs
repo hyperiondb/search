@@ -20,6 +20,24 @@ fn u64_to_ctid(v: u64) -> pg_sys::ItemPointerData {
     tid
 }
 
+unsafe fn validate_index_definition(index: pg_sys::Relation) {
+    if (*(*index).rd_rel).relpersistence == pg_sys::RELPERSISTENCE_UNLOGGED as core::ffi::c_char {
+        error!("bm25 indexes on unlogged tables are not supported");
+    }
+    let Some(kf) = options::key_field(index) else {
+        error!("bm25 index requires WITH (key_field='<column>')");
+    };
+    let tupdesc = (*index).rd_att;
+    let natts = (*tupdesc).natts as usize;
+    for i in 0..natts {
+        let att = pg_sys::TupleDescAttr(tupdesc, i as i32);
+        if pgrx::name_data_to_str(&(*att).attname) == kf {
+            return;
+        }
+    }
+    error!("key_field '{kf}' does not name a column of the bm25 index");
+}
+
 unsafe fn columns_of_index(index: pg_sys::Relation) -> (Vec<ColumnSpec>, usize) {
     let tupdesc = (*index).rd_att;
     let natts = (*tupdesc).natts as usize;
@@ -116,6 +134,7 @@ pub unsafe extern "C-unwind" fn ambuild(
     index: pg_sys::Relation,
     index_info: *mut pg_sys::IndexInfo,
 ) -> *mut pg_sys::IndexBuildResult {
+    validate_index_definition(index);
     let (cols, key_attno) = columns_of_index(index);
     let session = match store::begin_build(index, &cols) {
         Ok(s) => s,
@@ -154,11 +173,8 @@ pub unsafe extern "C-unwind" fn ambuild(
 }
 
 #[pg_guard]
-pub unsafe extern "C-unwind" fn ambuildempty(index: pg_sys::Relation) {
-    let (cols, _ka) = columns_of_index(index);
-    if let Ok(session) = store::begin_build(index, &cols) {
-        let _ = store::finish_build(index, session);
-    }
+pub unsafe extern "C-unwind" fn ambuildempty(_index: pg_sys::Relation) {
+    error!("bm25 indexes on unlogged tables are not supported");
 }
 
 #[pg_guard]
@@ -294,7 +310,10 @@ pub unsafe extern "C-unwind" fn amgetbitmap(
             None => return 0,
         };
         let cfg = attcfg(attno);
-        let hits = store::search(index, attno, &query, &cfg, crate::max_matches()).unwrap_or_default();
+        let hits = match store::search(index, attno, &query, &cfg, crate::max_matches()) {
+            Ok(h) => h,
+            Err(e) => error!("hsearch: bm25 search failed: {e}"),
+        };
         let mut m: HashMap<u64, (String, f32)> = HashMap::new();
         for h in hits {
             let e = m.entry(h.ctid).or_insert((h.key.clone(), f32::MIN));

@@ -42,6 +42,7 @@ pub struct Hit {
 
 enum PendingOp {
     Add {
+        subid: pg_sys::SubTransactionId,
         ctid: u64,
         key: String,
         fields: Vec<FieldText>,
@@ -186,7 +187,7 @@ fn ensure_current(rel: pg_sys::Relation) -> Result<(), String> {
         return Ok(());
     }
     if gen == 0 {
-        return Err("index not built".to_string());
+        return Err("index not initialized; REINDEX to rebuild".to_string());
     }
     let snap = unsafe { blockstore::snapshot(rel) };
     let dir = dir_from_snapshot(&snap)?;
@@ -288,9 +289,7 @@ pub fn search(
     cfg: &NgramConfig,
     limit: usize,
 ) -> Result<Vec<Hit>, String> {
-    if ensure_current(rel).is_err() {
-        return Ok(Vec::new());
-    }
+    ensure_current(rel)?;
     let relid = unsafe { (*rel).rd_id.to_u32() };
     CACHE.with(|c| {
         let borrow = c.borrow();
@@ -345,11 +344,17 @@ pub fn search(
 
 pub fn buffer_add(relid: u32, ctid: u64, key: String, fields: Vec<FieldText>) {
     ensure_xact_registered();
+    let subid = unsafe { pg_sys::GetCurrentSubTransactionId() };
     PENDING.with(|p| {
         p.borrow_mut()
             .entry(relid)
             .or_default()
-            .push(PendingOp::Add { ctid, key, fields });
+            .push(PendingOp::Add {
+                subid,
+                ctid,
+                key,
+                fields,
+            });
     });
 }
 
@@ -363,10 +368,46 @@ fn ensure_xact_registered() {
         if !*done {
             unsafe {
                 pg_sys::RegisterXactCallback(Some(flush_xact_callback), std::ptr::null_mut());
+                pg_sys::RegisterSubXactCallback(Some(subxact_callback), std::ptr::null_mut());
             }
             *done = true;
         }
     });
+}
+
+pub unsafe fn install_cache_callbacks() {
+    pg_sys::CacheRegisterRelcacheCallback(Some(relcache_callback), pg_sys::Datum::from(0usize));
+}
+
+#[pg_guard]
+unsafe extern "C-unwind" fn relcache_callback(_arg: pg_sys::Datum, relid: pg_sys::Oid) {
+    CACHE.with(|c| {
+        if let Ok(mut cache) = c.try_borrow_mut() {
+            if relid == pg_sys::InvalidOid {
+                cache.clear();
+            } else {
+                cache.remove(&relid.to_u32());
+            }
+        }
+    });
+}
+
+#[pg_guard]
+unsafe extern "C-unwind" fn subxact_callback(
+    event: pg_sys::SubXactEvent::Type,
+    my_subid: pg_sys::SubTransactionId,
+    _parent_subid: pg_sys::SubTransactionId,
+    _arg: *mut core::ffi::c_void,
+) {
+    if event == pg_sys::SubXactEvent::SUBXACT_EVENT_ABORT_SUB {
+        PENDING.with(|p| {
+            let mut map = p.borrow_mut();
+            for ops in map.values_mut() {
+                ops.retain(|PendingOp::Add { subid, .. }| *subid < my_subid);
+            }
+            map.retain(|_, ops| !ops.is_empty());
+        });
+    }
 }
 
 fn flush_one(relid: u32, ops: &[PendingOp]) -> Result<(), String> {
@@ -391,7 +432,9 @@ fn flush_one(relid: u32, ops: &[PendingOp]) -> Result<(), String> {
             .writer_with_num_threads(1, 64_000_000)
             .map_err(|e| format!("writer: {e}"))?;
         for op in ops {
-            let PendingOp::Add { ctid, key, fields } = op;
+            let PendingOp::Add {
+                ctid, key, fields, ..
+            } = op;
             writer.delete_term(Term::from_field_u64(ctid_field, *ctid));
             let mut doc = TantivyDocument::default();
             doc.add_u64(ctid_field, *ctid);
@@ -426,12 +469,14 @@ fn flush_pending() -> Result<(), String> {
 
 pub fn bulk_delete<F: Fn(u64) -> bool>(rel: pg_sys::Relation, is_dead: F) -> Result<u64, String> {
     let relid = unsafe { (*rel).rd_id.to_u32() };
-    let snap = unsafe { blockstore::snapshot(rel) };
-    if snap.generation == 0 {
+    if unsafe { blockstore::generation(rel) } == 0 {
         return Ok(0);
     }
     let _guard = unsafe { blockstore::lock_writer(relid) };
     let snap = unsafe { blockstore::snapshot(rel) };
+    if snap.generation == 0 {
+        return Ok(0);
+    }
     let dir = dir_from_snapshot(&snap)?;
     let index = open_from_dir(dir.clone())?;
     let schema = index.schema();
@@ -445,7 +490,10 @@ pub fn bulk_delete<F: Fn(u64) -> bool>(rel: pg_sys::Relation, is_dead: F) -> Res
     let searcher = reader.searcher();
     let mut dead: Vec<u64> = Vec::new();
     for seg in searcher.segment_readers() {
-        let store = seg.get_store_reader(0).map_err(|e| format!("store: {e}"))?;
+        let col = seg
+            .fast_fields()
+            .u64(CTID_FIELD)
+            .map_err(|e| format!("fast field {CTID_FIELD}: {e}"))?;
         let alive = seg.alive_bitset();
         for doc_id in 0..seg.max_doc() {
             if let Some(bs) = alive {
@@ -453,11 +501,7 @@ pub fn bulk_delete<F: Fn(u64) -> bool>(rel: pg_sys::Relation, is_dead: F) -> Res
                     continue;
                 }
             }
-            let doc: TantivyDocument = match store.get(doc_id) {
-                Ok(d) => d,
-                Err(_) => continue,
-            };
-            if let Some(ctid) = doc.get_first(ctid_field).and_then(|v| v.as_u64()) {
+            if let Some(ctid) = col.first(doc_id) {
                 if is_dead(ctid) {
                     dead.push(ctid);
                 }

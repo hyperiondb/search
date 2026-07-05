@@ -18,6 +18,7 @@ pub struct Meta {
     pub generation: u64,
     pub total_blocks: u32,
     free: Vec<(u32, u32)>,
+    pending: Vec<(u32, u32)>,
     files: BTreeMap<String, (u32, u32, u32)>,
 }
 
@@ -115,21 +116,56 @@ impl Meta {
         }
     }
 
-    fn free_run(&mut self, start: u32, n: u32) {
+    fn free_now(&mut self, start: u32, n: u32) {
         if n == 0 {
             return;
         }
         self.free.push((start, n));
     }
+
+    fn free_deferred(&mut self, start: u32, n: u32) {
+        if n == 0 {
+            return;
+        }
+        self.pending.push((start, n));
+    }
+
+    fn promote_pending(&mut self) {
+        let promoted = std::mem::take(&mut self.pending);
+        self.free.extend(promoted);
+    }
 }
+
+const MAX_XLOG_PAGES: u32 = 4;
 
 unsafe fn write_run(rel: pg_sys::Relation, start: u32, n: u32, data: &[u8]) {
     let mut offset = 0usize;
-    for i in 0..n {
-        let end = (offset + payload()).min(data.len());
-        let chunk = &data[offset.min(data.len())..end];
-        write_block(rel, start + i, chunk, true);
-        offset = end;
+    let mut block = start;
+    let end_block = start + n;
+    while block < end_block {
+        let batch = (end_block - block).min(MAX_XLOG_PAGES);
+        let mut bufs = [0 as pg_sys::Buffer; MAX_XLOG_PAGES as usize];
+        for (j, buf) in bufs.iter_mut().enumerate().take(batch as usize) {
+            *buf = pg_sys::ReadBuffer(rel, block + j as u32);
+            pg_sys::LockBuffer(*buf, pg_sys::BUFFER_LOCK_EXCLUSIVE as i32);
+        }
+        let state = pg_sys::GenericXLogStart(rel);
+        for &buf in bufs.iter().take(batch as usize) {
+            let page = pg_sys::GenericXLogRegisterBuffer(state, buf, GENERIC_XLOG_FULL_IMAGE);
+            pg_sys::PageInit(page, blcksz(), 0);
+            let end = (offset + payload()).min(data.len());
+            let chunk = &data[offset.min(data.len())..end];
+            let dst = (page as *mut u8).add(HEADER);
+            std::ptr::copy_nonoverlapping(chunk.as_ptr(), dst, chunk.len());
+            let ph = page as *mut pg_sys::PageHeaderData;
+            (*ph).pd_lower = (HEADER + chunk.len()) as u16;
+            offset = end;
+        }
+        pg_sys::GenericXLogFinish(state);
+        for &buf in bufs.iter().take(batch as usize) {
+            pg_sys::UnlockReleaseBuffer(buf);
+        }
+        block += batch;
     }
 }
 
@@ -158,39 +194,54 @@ fn ser_catalog(meta: &Meta) -> Vec<u8> {
         b.extend_from_slice(&n.to_le_bytes());
         b.extend_from_slice(&l.to_le_bytes());
     }
+    b.extend_from_slice(&(meta.pending.len() as u32).to_le_bytes());
+    for (s, n) in &meta.pending {
+        b.extend_from_slice(&s.to_le_bytes());
+        b.extend_from_slice(&n.to_le_bytes());
+    }
     b
+}
+
+fn rd_u32(b: &[u8], p: &mut usize) -> Option<u32> {
+    let v = u32::from_le_bytes(b.get(*p..*p + 4)?.try_into().ok()?);
+    *p += 4;
+    Some(v)
+}
+
+fn rd_u16(b: &[u8], p: &mut usize) -> Option<u16> {
+    let v = u16::from_le_bytes(b.get(*p..*p + 2)?.try_into().ok()?);
+    *p += 2;
+    Some(v)
 }
 
 fn de_catalog(b: &[u8], meta: &mut Meta) {
     let mut p = 0usize;
-    let rd_u32 = |b: &[u8], p: &mut usize| -> u32 {
-        let v = u32::from_le_bytes([b[*p], b[*p + 1], b[*p + 2], b[*p + 3]]);
-        *p += 4;
-        v
-    };
-    let rd_u16 = |b: &[u8], p: &mut usize| -> u16 {
-        let v = u16::from_le_bytes([b[*p], b[*p + 1]]);
-        *p += 2;
-        v
-    };
-    if b.len() < 4 {
-        return;
-    }
-    let fc = rd_u32(b, &mut p);
+    let Some(fc) = rd_u32(b, &mut p) else { return };
     for _ in 0..fc {
-        let s = rd_u32(b, &mut p);
-        let n = rd_u32(b, &mut p);
+        let (Some(s), Some(n)) = (rd_u32(b, &mut p), rd_u32(b, &mut p)) else {
+            return;
+        };
         meta.free.push((s, n));
     }
-    let nfiles = rd_u32(b, &mut p);
+    let Some(nfiles) = rd_u32(b, &mut p) else { return };
     for _ in 0..nfiles {
-        let nl = rd_u16(b, &mut p) as usize;
-        let name = String::from_utf8_lossy(&b[p..p + nl]).into_owned();
+        let Some(nl) = rd_u16(b, &mut p) else { return };
+        let nl = nl as usize;
+        let Some(nb) = b.get(p..p + nl) else { return };
+        let name = String::from_utf8_lossy(nb).into_owned();
         p += nl;
-        let s = rd_u32(b, &mut p);
-        let n = rd_u32(b, &mut p);
-        let l = rd_u32(b, &mut p);
+        let (Some(s), Some(n), Some(l)) = (rd_u32(b, &mut p), rd_u32(b, &mut p), rd_u32(b, &mut p))
+        else {
+            return;
+        };
         meta.files.insert(name, (s, n, l));
+    }
+    let Some(pc) = rd_u32(b, &mut p) else { return };
+    for _ in 0..pc {
+        let (Some(s), Some(n)) = (rd_u32(b, &mut p), rd_u32(b, &mut p)) else {
+            return;
+        };
+        meta.pending.push((s, n));
     }
 }
 
@@ -265,7 +316,7 @@ unsafe fn write_superblock(
 
 unsafe fn flush_meta(rel: pg_sys::Relation, meta: &mut Meta, old_catalog: (u32, u32)) {
     if old_catalog.1 > 0 {
-        meta.free_run(old_catalog.0, old_catalog.1);
+        meta.free_deferred(old_catalog.0, old_catalog.1);
     }
     let mut blob = ser_catalog(meta);
     let mut need = run_blocks(blob.len());
@@ -276,7 +327,7 @@ unsafe fn flush_meta(rel: pg_sys::Relation, meta: &mut Meta, old_catalog: (u32, 
         if need2 <= need {
             break;
         }
-        meta.free_run(start, need);
+        meta.free_now(start, need);
         need = need2;
         start = meta.alloc(rel, need);
     }
@@ -290,6 +341,7 @@ pub unsafe fn init(rel: pg_sys::Relation) {
         generation: 1,
         total_blocks: 1,
         free: Vec::new(),
+        pending: Vec::new(),
         files: BTreeMap::new(),
     };
     write_superblock(rel, &meta, 0, 0, 0);
@@ -335,16 +387,17 @@ pub unsafe fn apply(rel: pg_sys::Relation, changes: Vec<Change>) {
         let sb = read_superblock(rel).unwrap_or((0, 0, 0, 0, 0));
         (sb.2, sb.3)
     };
+    meta.promote_pending();
     for ch in changes {
         match ch {
             Change::Delete(name) => {
                 if let Some((s, n, _l)) = meta.files.remove(&name) {
-                    meta.free_run(s, n);
+                    meta.free_deferred(s, n);
                 }
             }
             Change::Write(name, bytes) => {
                 if let Some((s, n, _l)) = meta.files.remove(&name) {
-                    meta.free_run(s, n);
+                    meta.free_deferred(s, n);
                 }
                 let need = run_blocks(bytes.len());
                 let start = meta.alloc(rel, need);
@@ -380,4 +433,66 @@ pub unsafe fn lock_writer(relid: u32) -> WriterGuard {
     };
     pg_sys::LockAcquire(&mut tag, pg_sys::ExclusiveLock as i32, true, false);
     WriterGuard { tag }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_meta() -> Meta {
+        let mut files = BTreeMap::new();
+        files.insert("meta.json".to_string(), (5, 2, 9000));
+        files.insert("seg.idx".to_string(), (7, 10, 80_000));
+        Meta {
+            generation: 42,
+            total_blocks: 17,
+            free: vec![(1, 3), (12, 1)],
+            pending: vec![(4, 1), (15, 2)],
+            files,
+        }
+    }
+
+    #[test]
+    fn catalog_roundtrip_with_pending() {
+        let m = sample_meta();
+        let blob = ser_catalog(&m);
+        let mut out = Meta::default();
+        de_catalog(&blob, &mut out);
+        assert_eq!(out.free, m.free);
+        assert_eq!(out.pending, m.pending);
+        assert_eq!(out.files, m.files);
+    }
+
+    #[test]
+    fn catalog_without_pending_section_parses() {
+        let m = sample_meta();
+        let mut blob = ser_catalog(&m);
+        let trailing = 4 + m.pending.len() * 8;
+        blob.truncate(blob.len() - trailing);
+        let mut out = Meta::default();
+        de_catalog(&blob, &mut out);
+        assert_eq!(out.free, m.free);
+        assert_eq!(out.files, m.files);
+        assert!(out.pending.is_empty());
+    }
+
+    #[test]
+    fn truncated_catalog_does_not_panic() {
+        let m = sample_meta();
+        let blob = ser_catalog(&m);
+        for cut in 0..blob.len() {
+            let mut out = Meta::default();
+            de_catalog(&blob[..cut], &mut out);
+        }
+    }
+
+    #[test]
+    fn promote_pending_moves_all() {
+        let mut m = sample_meta();
+        let free_before = m.free.len();
+        let pending_before = m.pending.len();
+        m.promote_pending();
+        assert!(m.pending.is_empty());
+        assert_eq!(m.free.len(), free_before + pending_before);
+    }
 }

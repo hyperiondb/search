@@ -1,0 +1,2 @@
+-- hsearch 0.3.0: no SQL-level changes; all changes are in the shared library
+-- (crash-safe blockstore copy-on-write, subtransaction handling, validation).

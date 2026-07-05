@@ -71,11 +71,22 @@ ORDER BY score DESC
 LIMIT 10 OFFSET 0;
 ```
 
-`key_field` must name one of the indexed columns (the key/`_id`); every other indexed column
-is treated as an ngram-tokenized text field. The `&&&` query word is tokenized into the same
-ngrams as the indexed text and matches documents that contain **all** of them (a conjunction,
-i.e. an accent-folded substring match), ranked by BM25. So `name &&& 'canon'` matches rows
-whose `name` contains `canon`, not rows that merely share a common bigram like `on`.
+`key_field` must name one of the indexed columns (the key/`_id`) — `CREATE INDEX` errors if
+it is missing or names a column not in the index; every other indexed column is treated as an
+ngram-tokenized text field. The `&&&` query word is tokenized into the same ngrams as the
+indexed text and matches documents that contain **all** of them (a conjunction, i.e. an
+accent-folded substring match), ranked by BM25. So `name &&& 'canon'` matches rows whose
+`name` contains `canon`, not rows that merely share a common bigram like `on`.
+
+Current limitations:
+
+- The ngram configuration is fixed at `(2,5,'ascii_folding=true')`; other `hyper.ngram(...)`
+  parameters are rejected at DDL time (the recheck path could not honor them consistently).
+- Unlogged tables are not supported (the index storage is WAL-logged by design).
+- Rows inserted in the current transaction become searchable at commit (index writes are
+  buffered per transaction); deletes/updates are filtered immediately via MVCC recheck.
+- If a `bm25` index cannot be opened at query time (e.g. after page corruption), queries and
+  inserts fail with an error — not silently empty results — until `REINDEX`.
 
 ## Architecture
 
@@ -86,7 +97,9 @@ thread-safe — so Tantivy never touches Postgres storage directly. Instead:
   pages. `blockstore.rs` implements a tiny WAL-logged file store over those pages (superblock +
   free-list allocator + per-file catalog), writing every change through the buffer manager and
   **generic WAL** (`GenericXLogStart/RegisterBuffer/Finish`). This is what streams to standbys
-  and survives crash/failover.
+  and survives crash/failover. The store is copy-on-write: blocks freed by a write only become
+  allocatable after the next superblock/generation flip, so a crash mid-sync or a concurrent
+  reader always sees an intact previous generation.
 - **Tantivy working copy:** each backend materializes the index into an in-RAM `RamDirectory`
   (`store.rs`); Tantivy and its threads only ever touch RAM. The main backend thread syncs
   *changed* segment files between RAM and the WAL-logged pages — so WAL volume is proportional
@@ -127,8 +140,8 @@ search is typically much faster.
   distance/price-ordered `&&&` filter needs deeper recall.
 - Writes serialize at commit on a per-index advisory lock (Tantivy's single-writer model) and
   each commit reloads the index into the backend's RAM mirror, so single-row insert latency grows
-  with index size — bulk loads (one transaction) and `prepareParade*` rebuilds are far faster
-  per row. Batch writes where possible.
+  with index size — bulk loads (one transaction) and full rebuilds are far faster per row.
+  Batch writes where possible.
 
 ## Building & testing
 

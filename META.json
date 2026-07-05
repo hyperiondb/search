@@ -1,17 +1,17 @@
 {
    "name": "hsearch",
    "abstract": "BM25 full-text search for PostgreSQL via a Tantivy-backed bm25 index",
-   "description": "hsearch is a pgrx PostgreSQL extension that adds a custom `bm25` index backed by the Tantivy search engine. It exposes the `hyper` schema (ngram tokenizer cast, BM25 score function), the index-accelerated `&&&` match operator, and the `key_field` index storage option. The index lives on local disk and is rebuilt on failover (the search corpus is a derived projection and fully reconstructable).",
-   "version": "0.1.0",
+   "description": "hsearch is a pgrx PostgreSQL extension that adds a custom `bm25` index backed by the Tantivy search engine. It exposes the `hyper` schema (ngram tokenizer cast, BM25 score function), the index-accelerated `&&&` match operator, and the `key_field` index storage option. The index lives in WAL-logged Postgres pages, so it replicates over physical streaming replication and survives crash recovery and failover without a rebuild.",
+   "version": "0.4.0",
    "maintainer": [
-      "Tadas Talaikis <talaikis.tadas@gmail.com>"
+      "Tadas Talaikis <info@nordlet.com>"
    ],
    "license": "agpl_3",
    "provides": {
       "hsearch": {
          "abstract": "BM25 full-text search for PostgreSQL (bm25 index access method)",
          "file": "hsearch.control",
-         "version": "0.1.0"
+         "version": "0.4.0"
       }
    },
    "prereqs": {

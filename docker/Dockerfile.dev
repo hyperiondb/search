@@ -22,4 +22,13 @@ RUN cargo install cargo-pgrx --version 0.18.1 --locked
 RUN cargo pgrx init --pg18 /usr/lib/postgresql/18/bin/pg_config
 
 ENV CARGO_TARGET_DIR=/home/builder/target
+ENV PG_VERSION=pg18
+ENV USER=builder
+
+USER root
+RUN chown -R builder:builder \
+      "$(/usr/lib/postgresql/18/bin/pg_config --pkglibdir)" \
+      "$(/usr/lib/postgresql/18/bin/pg_config --sharedir)"
+USER builder
+
 WORKDIR /work

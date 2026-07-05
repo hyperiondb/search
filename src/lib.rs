@@ -56,6 +56,7 @@ pub extern "C-unwind" fn _PG_init() {
     unsafe {
         options::init_reloptions();
         scoreboard::install_hooks();
+        store::install_cache_callbacks();
     }
 }
 
@@ -131,7 +132,12 @@ pub unsafe extern "C-unwind" fn hsearch_ngram_typmod_in(
 ) -> pg_sys::Datum {
     let parts = cstring_array(raw_arg(fcinfo, 0));
     match tokenizer::pack_typmod(&parts) {
-        Ok(packed) => packed.into_datum().unwrap(),
+        Ok(packed) => {
+            if tokenizer::unpack_typmod(packed) != NgramConfig::default() {
+                error!("hyper.ngram only supports (2,5,'ascii_folding=true') in this version");
+            }
+            packed.into_datum().unwrap()
+        }
         Err(e) => error!("hyper.ngram type modifier: {e}"),
     }
 }
@@ -401,6 +407,76 @@ mod tests {
             .unwrap()
             .unwrap();
         assert!(count >= 2, "two-char ngram query should match, got {count}");
+    }
+
+    #[pg_test]
+    fn search_and_scoring_survive_caught_subxact_error() {
+        seed_items();
+        Spi::run("DO $$ BEGIN PERFORM 1/0; EXCEPTION WHEN OTHERS THEN NULL; END $$;").unwrap();
+        let id = Spi::get_one::<String>(
+            "SELECT _id FROM items WHERE name &&& 'kavos' ORDER BY hyper.score(_id) DESC LIMIT 1",
+        )
+        .unwrap()
+        .unwrap();
+        assert!(
+            id == "000000000000000000000001" || id == "000000000000000000000004",
+            "search must keep scoring correctly after a caught error, got {id}"
+        );
+    }
+
+    #[pg_test(error = "key_field 'nope' does not name a column of the bm25 index")]
+    fn key_field_typo_rejected() {
+        Spi::run("CREATE TABLE t1 (_id varchar(24) PRIMARY KEY, name text)").unwrap();
+        Spi::run(
+            "CREATE INDEX ON t1 USING bm25 (_id, (name::hyper.ngram(2,5,'ascii_folding=true')))
+             WITH (key_field='nope')",
+        )
+        .unwrap();
+    }
+
+    #[pg_test(error = "bm25 index requires WITH (key_field='<column>')")]
+    fn key_field_required() {
+        Spi::run("CREATE TABLE t2 (_id varchar(24) PRIMARY KEY, name text)").unwrap();
+        Spi::run("CREATE INDEX ON t2 USING bm25 (_id, (name::hyper.ngram(2,5,'ascii_folding=true')))")
+            .unwrap();
+    }
+
+    #[pg_test(error = "bm25 indexes on unlogged tables are not supported")]
+    fn unlogged_rejected() {
+        Spi::run("CREATE UNLOGGED TABLE t3 (_id varchar(24) PRIMARY KEY, name text)").unwrap();
+        Spi::run(
+            "CREATE INDEX ON t3 USING bm25 (_id, (name::hyper.ngram(2,5,'ascii_folding=true')))
+             WITH (key_field='_id')",
+        )
+        .unwrap();
+    }
+
+    #[pg_test(error = "hyper.ngram only supports (2,5,'ascii_folding=true') in this version")]
+    fn non_default_ngram_config_rejected() {
+        Spi::run("SELECT 'x'::hyper.ngram(3,8)").unwrap();
+    }
+
+    #[pg_test]
+    fn default_ngram_config_accepted() {
+        Spi::run("SELECT 'x'::hyper.ngram(2,5)").unwrap();
+        Spi::run("SELECT 'x'::hyper.ngram(2,5,'ascii_folding=true')").unwrap();
+    }
+
+    #[pg_test]
+    fn savepoint_rollback_discards_pending_inserts() {
+        seed_items();
+        Spi::run(
+            "DO $$ BEGIN
+                INSERT INTO items (_id, name, summary, category_path)
+                VALUES ('00000000000000000000dead', 'Nikon fotoaparatas', 'x', 'y');
+                RAISE EXCEPTION 'boom';
+            EXCEPTION WHEN OTHERS THEN NULL; END $$;",
+        )
+        .unwrap();
+        let n = Spi::get_one::<i64>("SELECT count(*) FROM items WHERE name &&& 'nikon'")
+            .unwrap()
+            .unwrap();
+        assert_eq!(n, 0, "rolled-back insert must not match");
     }
 
     #[pg_test]

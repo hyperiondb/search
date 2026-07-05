@@ -40,7 +40,7 @@ Maintainer: Tadas Talaikis <info@nordlet.com>
 Section: database
 Priority: optional
 Depends: postgresql-${PG_MAJOR}
-Homepage: https://github.com/hyperiondb/hsearch
+Homepage: https://github.com/hyperiondb/search
 Description: BM25 full-text search for PostgreSQL (Tantivy-backed bm25 index access method)
  hsearch adds a custom bm25 index access method backed by Tantivy, the hyper
  schema (ngram tokenizer cast + BM25 score function), and the index-accelerated
