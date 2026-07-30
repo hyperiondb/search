@@ -15,7 +15,7 @@ RUN useradd -m -s /bin/bash builder \
 USER builder
 WORKDIR /home/builder
 
-RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.96.0 --profile minimal
+RUN curl -fsSL https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.97.1 --profile minimal
 ENV PATH=/home/builder/.cargo/bin:$PATH
 
 RUN cargo install cargo-pgrx --version 0.18.1 --locked

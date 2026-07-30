@@ -1,0 +1,1 @@
+-- hsearch 0.4.0: no SQL-level changes; all changes are in the shared library.

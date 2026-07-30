@@ -1,0 +1,1 @@
+-- hsearch 0.4.1: no SQL-level changes; completes the upgrade path broken in 0.4.0.
